@@ -1,29 +1,56 @@
 import express from "express";
-import ffmpeg from "fluent-ffmpeg";
+import {convertVideo, 
+        downloadRawVideo,
+        deleteRawVideo,
+        deleteProcessedVideo,
+        setupDirectories, 
+        uploadProcessedVideo } 
+        from "./storage";
+
+setupDirectories();
 
 const app = express();
 app.use(express.json());
 
-app.post('/process-video', (req, res) => {
-    // Get path from the input video file from the request body
-    const inputFilePath = req.body.inputFilePath;
-    const outputFilePath = req.body.outputFilePath;
-
-    if(!inputFilePath ||!outputFilePath) {
-        res.status(400).send("Bad request: Missing file path.");
+app.post('/process-video',async (req, res) => {
+    let data;
+    try{
+        const message = Buffer.from(req.body.message.data, 'base64').toString('utf8');
+        data = JSON.parse(message);
+        if (!data.name){
+            throw new Error('Iinvalid message payload received.');
+        }
+    } catch (error){
+        console.error(error);
+        return res.status(400).send('Bad Request: missing filename.');
     }
 
-    ffmpeg(inputFilePath)
-        .videoFilters('scale=-1:360') // convert the video into 360p
-        .on('end', () => {    
-        res.status(200).send("Video processed successfully.")
-        })
-        .on('error', (err) => {
-            console.log(`An error occurred: ${err.message}`);
-            res.status(500).send(`Internal Server Error: ${err.message}`);
-        })
-        .save(outputFilePath);
-    
+    const inputFileName = data.name
+    const outputFileName = `processed-${inputFileName}`;
+
+    // Download the raw video from cloud storage
+    await downloadRawVideo(inputFileName)
+
+    // Convert the video into 360p
+    try{
+        await convertVideo(inputFileName, outputFileName);
+    } catch (error){
+        await Promise.all([
+            deleteRawVideo(inputFileName),
+            deleteProcessedVideo(outputFileName)
+        ]);
+        console.error(error);
+        return res.status(500).send('Internal Server Error: video processing failed');
+    }
+    // Upload the video to the cloud storage
+    await uploadProcessedVideo(outputFileName);
+
+    await Promise.all([
+        deleteRawVideo(inputFileName),
+        deleteProcessedVideo(outputFileName)
+    ]);
+
+    return res.status(200).send('Processing finished successfully');
 });
 
 const port = process.env.PORT || 3000;
